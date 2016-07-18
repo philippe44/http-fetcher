@@ -45,3 +45,36 @@ $RECYCLE.BIN/
 Network Trash Folder
 Temporary Items
 .apdisk
+
+# C++ builder related
+*.*proj
+*.local
+__history
+Win32
+*.res
+*.i??
+*.map
+*.tds
+bin/
+test*/
+*.o
+docs*/
+Makefile*
+.deps*/
+config*
+*.IoT
+missing*
+*.sh
+mk*
+*-sh
+CREDITS
+README
+LICENSE
+INSTALL
+*.deps
+*.m4
+*.spec
+libtool
+depcomp
+ChangeLog
+main.c
