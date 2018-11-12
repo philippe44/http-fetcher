@@ -22,21 +22,31 @@
 #define OSX       0
 #define WIN       0
 #define FREEBSD   0
+#define SUNOS	  0
 #elif defined (__APPLE__)
 #define LINUX     0
 #define OSX       1
 #define WIN       0
 #define FREEBSD   0
+#define SUNOS	  0
 #elif defined (_MSC_VER) || defined(__BORLANDC__)
 #define LINUX     0
 #define OSX       0
 #define WIN       1
 #define FREEBSD   0
+#define SUNOS	  0
 #elif defined(__FreeBSD__)
 #define LINUX     0
 #define OSX       0
 #define WIN       0
 #define FREEBSD   1
+#define SUNOS	  0
+#elif defined(sun)
+#define LINUX     0
+#define OSX       0
+#define WIN       0
+#define FREEBSD   0
+#define SUNOS	  1
 #else
 #error unknown target
 #endif
@@ -65,6 +75,9 @@
 #include <strings.h>
 #include <sys/time.h>
 #include <netdb.h>
+
+#define closesocket close
+
 #endif
 
 #define VERSION					"1.1.0"
@@ -312,7 +325,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 
 		if(send(sock, requestBuf, strlen(requestBuf), 0) == -1)
 			{
-			close(sock);
+			closesocket(sock);
 			free(requestBuf);
 			errorSource = ERRNO;
 			return -1;
@@ -323,13 +336,13 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 
 		/* Grab enough of the response to get the metadata */
 		ret = _http_read_header(sock, headerBuf);	/* errorSource set within */
-		if(ret < 0) { close(sock); return -1; }
+		if(ret < 0) { closesocket(sock); return -1; }
 
 		/* Get the return code */
 		charIndex = strstr(headerBuf, "HTTP/");
 		if(charIndex == NULL)
 			{
-			close(sock);
+			closesocket(sock);
 			errorSource = FETCHER_ERROR;
 			http_errno = HF_FRETURNCODE;
 			return -1;
@@ -341,14 +354,14 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		ret = sscanf(charIndex, "%d", &i);
 		if(ret != 1)
 			{
-			close(sock);
+			closesocket(sock);
 			errorSource = FETCHER_ERROR;
 			http_errno = HF_CRETURNCODE;
 			return -1;
 			}
 		if(i<200 || i>307)
 			{
-			close(sock);
+			closesocket(sock);
 			errorInt = i;	/* Status code, to be inserted in error string */
 			errorSource = FETCHER_ERROR;
 			http_errno = HF_STATUSCODE;
@@ -368,7 +381,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 			charIndex = strstr(headerBuf, "Location:");
 			if(!charIndex)
 				{
-				close(sock);
+				closesocket(sock);
 				errorInt = i; /* Status code, to be inserted in error string */
 				errorSource = FETCHER_ERROR;
 				http_errno = HF_CANTREDIRECT;
@@ -380,7 +393,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
                 charIndex++;
             if(*charIndex == '\0')
                 {
-				close(sock);
+				closesocket(sock);
 				errorInt = i; /* Status code, to be inserted in error string */
 				errorSource = FETCHER_ERROR;
 				http_errno = HF_CANTREDIRECT;
@@ -413,7 +426,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
     
     if(redirectsFollowed >= followRedirects && !found)
         {
-        close(sock);
+		closesocket(sock);
     	errorInt = followRedirects; /* To be inserted in error string */
     	errorSource = FETCHER_ERROR;
     	http_errno = HF_MAXREDIRECTS;
@@ -458,7 +471,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 			&contentLength);
 		if(ret < 1)
 			{
-			close(sock);
+			closesocket(sock);
 			errorSource = FETCHER_ERROR;
 			http_errno = HF_CONTENTLEN;
 			return -1;
@@ -472,7 +485,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 	pageBuf = (char *)malloc(contentLength);
 	if(pageBuf == NULL)
 		{
-		close(sock);
+		closesocket(sock);
 		errorSource = ERRNO;
 		return -1;
 		}
@@ -495,13 +508,13 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 			errorSource = FETCHER_ERROR;
 			http_errno = HF_DATATIMEOUT;
 			errorInt = timeout;
-			close(sock);
+			closesocket(sock);
 			free(pageBuf);
 			return -1;
 			}
 		else if(selectRet == -1)
 			{
-			close(sock);
+			closesocket(sock);
 			free(pageBuf);
 			errorSource = ERRNO;
 			return -1;
@@ -510,7 +523,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		ret = recv(sock, pageBuf + bytesRead, contentLength, 0);
 		if(ret == -1)
 			{
-			close(sock);
+			closesocket(sock);
 			free(pageBuf);
 			errorSource = ERRNO;
 			return -1;
@@ -527,7 +540,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 			tmp = (char *)realloc(pageBuf, bytesRead + contentLength);
 			if(tmp == NULL)
 				{
-				close(sock);
+				closesocket(sock);
 				free(pageBuf);
 				errorSource = ERRNO;
 				return -1;
@@ -549,7 +562,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		 *	an error message */
 	if(tmp == NULL)
 		{
-		close(sock);
+		closesocket(sock);
 		free(pageBuf);
 		errorSource = ERRNO;
 		return -1;
@@ -562,7 +575,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 	else
 		*fileBuf = pageBuf;
 
-	close(sock);
+	closesocket(sock);
 	return bytesRead;
 	}
 
