@@ -80,9 +80,24 @@
 
 #endif
 
+#if USE_SSL
+#include "openssl/ssl.h"
+#include "openssl/err.h"
+#endif
+
 #define VERSION					"1.1.0"
 
 #include "http_fetcher.h"
+
+typedef struct {
+	int sock;
+	void* ssl;
+} socketCtx;
+
+#if USE_SSL
+static SSL_CTX* mainSSL;
+static int countSSL;
+#endif
 
 /* Globals */
 int timeout = DEFAULT_READ_TIMEOUT;
@@ -104,7 +119,7 @@ static int errorInt = 0;			/* When the error message has a %d in it,
 	 *	# of bytes read on success, or
 	 *	-1 on error
 	 */
-static int _http_read_header(int sock, char *headerPtr);
+static int _http_read_header(socketCtx* ctx, int sock, char *headerPtr);
 
 	/*
 	 * Opens a TCP socket and returns the descriptor
@@ -112,7 +127,7 @@ static int _http_read_header(int sock, char *headerPtr);
 	 *	socket descriptor, or
 	 *	-1 on error
 	 */
-static int makeSocket(const char *host);
+static int makeSocket(const char *host, socketCtx* ctx, bool useSSL);
 
 	/*
 	 * Determines if the given NULL-terminated buffer is large enough to
@@ -124,6 +139,43 @@ static int makeSocket(const char *host);
 	 */
 static int _checkBufSize(char **buf, int *bufsize, int more);
 
+static int _recv(socketCtx* ctx, void* buffer, size_t bytes, int options) {
+	if (!ctx->ssl) return recv(ctx->sock, buffer, bytes, options);
+#if USE_SSL
+	int n = SSL_read(ctx->ssl, (uint8_t*) buffer, bytes);
+	if (n <= 0 && SSL_get_error(ctx->ssl, n) == SSL_ERROR_ZERO_RETURN) return 0;
+	return n;
+#endif
+}
+
+static int _send(socketCtx* ctx, void* buffer, size_t bytes, int options) {
+	if (!ctx->ssl) return send(ctx->sock, buffer, bytes, options);
+#if USE_SSL
+	while (1) {
+		int n, err;
+		ERR_clear_error();
+		if ((n = SSL_write(ctx->ssl, (uint8_t* )buffer, bytes)) >= 0) return n;
+		err = SSL_get_error(ctx->ssl, n);
+		if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) continue;
+		return n;
+	}
+#endif
+}
+
+static void _closesocket(socketCtx* ctx) {
+#if USE_SSL
+	if (ctx->ssl) {
+		SSL_shutdown(ctx->ssl);
+		SSL_free(ctx->ssl);
+		ctx->ssl = NULL;
+	}
+	if (!--countSSL) {
+		SSL_CTX_free(mainSSL);
+		mainSSL = NULL;
+	}
+#endif
+	closesocket(ctx->sock);
+}
 
 	/*
 	 * Actually downloads the page, registering a hit (donation)
@@ -144,7 +196,8 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		selectRet,
 		found = 0,	/* For redirects */
 		redirectsFollowed = 0;
-
+	bool useSSL = false;
+	socketCtx ctx;
 
 	if(url_tmp == NULL)
 		{
@@ -161,7 +214,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		return -1;
 		}
 	strncpy(url, url_tmp, strlen(url_tmp) + 1);
-	
+		
 	/* This loop allows us to follow redirects if need be.  An afterthought,
 	 * added to provide this basic functionality.  Will hopefully be designed
 	 * better in 2.x.x ;) */
@@ -169,6 +222,9 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		  (followRedirects < 0 || redirectsFollowed < followRedirects) )
   */  do
 		{
+		strlwr(url);
+	    useSSL = strstr(url, "https") != 0;
+
 		/* Seek to the file path portion of the url */
 		charIndex = strstr(url, "://");
 		if(charIndex != NULL)
@@ -317,15 +373,15 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 			}
 		requestBuf = tmp;
 
-		sock = makeSocket(host);		/* errorSource set within makeSocket */
+		ctx.sock = sock = makeSocket(host, &ctx, useSSL);		/* errorSource set within makeSocket */
 		if(sock == -1) { free(url); free(requestBuf); return -1;}
 
 		free(url);
         url = NULL;
 
-		if(send(sock, requestBuf, strlen(requestBuf), 0) == -1)
+		if(_send(&ctx, requestBuf, strlen(requestBuf), 0) == -1)
 			{
-			closesocket(sock);
+			_closesocket(&ctx);
 			free(requestBuf);
 			errorSource = ERRNO;
 			return -1;
@@ -335,14 +391,14 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
         requestBuf = NULL;
 
 		/* Grab enough of the response to get the metadata */
-		ret = _http_read_header(sock, headerBuf);	/* errorSource set within */
-		if(ret < 0) { closesocket(sock); return -1; }
+		ret = _http_read_header(&ctx, sock, headerBuf);	/* errorSource set within */
+		if(ret < 0) { _closesocket(&ctx); return -1; }
 
 		/* Get the return code */
 		charIndex = strstr(headerBuf, "HTTP/");
 		if(charIndex == NULL)
 			{
-			closesocket(sock);
+			_closesocket(&ctx);
 			errorSource = FETCHER_ERROR;
 			http_errno = HF_FRETURNCODE;
 			return -1;
@@ -354,14 +410,14 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		ret = sscanf(charIndex, "%d", &i);
 		if(ret != 1)
 			{
-			closesocket(sock);
+			_closesocket(&ctx);
 			errorSource = FETCHER_ERROR;
 			http_errno = HF_CRETURNCODE;
 			return -1;
 			}
 		if(i<200 || i>307)
 			{
-			closesocket(sock);
+			_closesocket(&ctx);
 			errorInt = i;	/* Status code, to be inserted in error string */
 			errorSource = FETCHER_ERROR;
 			http_errno = HF_STATUSCODE;
@@ -381,7 +437,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 			charIndex = strstr(headerBuf, "Location:");
 			if(!charIndex)
 				{
-				closesocket(sock);
+				_closesocket(&ctx);
 				errorInt = i; /* Status code, to be inserted in error string */
 				errorSource = FETCHER_ERROR;
 				http_errno = HF_CANTREDIRECT;
@@ -393,7 +449,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
                 charIndex++;
             if(*charIndex == '\0')
                 {
-				closesocket(sock);
+				_closesocket(&ctx);
 				errorInt = i; /* Status code, to be inserted in error string */
 				errorSource = FETCHER_ERROR;
 				http_errno = HF_CANTREDIRECT;
@@ -426,7 +482,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
     
     if(redirectsFollowed >= followRedirects && !found)
         {
-		closesocket(sock);
+		_closesocket(&ctx);
     	errorInt = followRedirects; /* To be inserted in error string */
     	errorSource = FETCHER_ERROR;
     	http_errno = HF_MAXREDIRECTS;
@@ -471,7 +527,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 			&contentLength);
 		if(ret < 1)
 			{
-			closesocket(sock);
+			_closesocket(&ctx);
 			errorSource = FETCHER_ERROR;
 			http_errno = HF_CONTENTLEN;
 			return -1;
@@ -485,7 +541,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 	pageBuf = (char *)malloc(contentLength);
 	if(pageBuf == NULL)
 		{
-		closesocket(sock);
+		_closesocket(&ctx);
 		errorSource = ERRNO;
 		return -1;
 		}
@@ -508,22 +564,22 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 			errorSource = FETCHER_ERROR;
 			http_errno = HF_DATATIMEOUT;
 			errorInt = timeout;
-			closesocket(sock);
+			_closesocket(&ctx);
 			free(pageBuf);
 			return -1;
 			}
 		else if(selectRet == -1)
 			{
-			closesocket(sock);
+			_closesocket(&ctx);
 			free(pageBuf);
 			errorSource = ERRNO;
 			return -1;
 			}
 
-		ret = recv(sock, pageBuf + bytesRead, contentLength, 0);
+		ret = _recv(&ctx, pageBuf + bytesRead, contentLength, 0);
 		if(ret == -1)
 			{
-			closesocket(sock);
+			_closesocket(&ctx);
 			free(pageBuf);
 			errorSource = ERRNO;
 			return -1;
@@ -540,7 +596,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 			tmp = (char *)realloc(pageBuf, bytesRead + contentLength);
 			if(tmp == NULL)
 				{
-				closesocket(sock);
+				_closesocket(&ctx);
 				free(pageBuf);
 				errorSource = ERRNO;
 				return -1;
@@ -562,7 +618,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		 *	an error message */
 	if(tmp == NULL)
 		{
-		closesocket(sock);
+		_closesocket(&ctx);
 		free(pageBuf);
 		errorSource = ERRNO;
 		return -1;
@@ -575,7 +631,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 	else
 		*fileBuf = pageBuf;
 
-	closesocket(sock);
+	_closesocket(&ctx);
 	return bytesRead;
 	}
 
@@ -796,7 +852,7 @@ const char *http_strerror()
 	 *	# of bytes read on success, or
 	 *	-1 on error
 	 */
-int _http_read_header(int sock, char *headerPtr)
+int _http_read_header(socketCtx* ctx, int sock, char *headerPtr)
 	{
 	fd_set rfds;
 	struct timeval tv;
@@ -823,7 +879,7 @@ int _http_read_header(int sock, char *headerPtr)
 			}
 		else if(selectRet == -1) { errorSource = ERRNO; return -1; }
 
-		ret = recv(sock, headerPtr, 1, 0);
+		ret = _recv(ctx, headerPtr, 1, 0);
 		if(ret == -1) { errorSource = ERRNO; return -1; }
 		bytesRead++;
 
@@ -855,42 +911,70 @@ int _http_read_header(int sock, char *headerPtr)
 	 *	socket descriptor, or
 	 *	-1 on error
 	 */
-int makeSocket(const char *host)
-	{
-	int sock;										/* Socket descriptor */
+int makeSocket(const char* host, socketCtx* ctx, bool useSSL)
+{
 	struct sockaddr_in sa;							/* Socket address */
-	struct hostent *hp;								/* Host entity */
+	struct hostent* hp;								/* Host entity */
 	int ret;
-    int port;
-    char *p;
-	
-    /* Check for port number specified in URL */
-    p = strchr(host, ':');
-    if(p)
-        {
-        port = atoi(p + 1);
-        *p = '\0';
-        }
-    else
-		{
-        port = PORT_NUMBER;
-		}
+	int port;
+	char* p;
+
+	/* Check for port number specified in URL */
+	p = strchr(host, ':');
+	if (p)
+	{
+		port = atoi(p + 1);
+		*p = '\0';
+	}
+	else
+	{
+		port = useSSL ? PORT_NUMBER_SSL : PORT_NUMBER;
+	}
 
 	hp = gethostbyname(host);
-	if(hp == NULL) { errorSource = H_ERRNO; return -1; }
-		
+	if (hp == NULL) { errorSource = H_ERRNO; return -1; }
+
 	/* Copy host address from hostent to (server) socket address */
-	memcpy((char *)&sa.sin_addr, (char *)hp->h_addr, hp->h_length);
+	memcpy((char*)&sa.sin_addr, (char*)hp->h_addr, hp->h_length);
 	sa.sin_family = hp->h_addrtype;		/* Set service sin_family to PF_INET */
 	sa.sin_port = htons(port);      	/* Put portnum into sockaddr */
 
-	sock = socket(hp->h_addrtype, SOCK_STREAM, 0);
-	if(sock == -1) { errorSource = ERRNO; return -1; }
+	ctx->sock = socket(hp->h_addrtype, SOCK_STREAM, 0);
+	if (ctx->sock == -1) { errorSource = ERRNO; return -1; }
 
-	ret = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
-	if(ret == -1) { errorSource = ERRNO; return -1; }
+	ret = connect(ctx->sock, (struct sockaddr*)&sa, sizeof(sa));
+	if (ret == -1) { errorSource = ERRNO; return -1; }
 
-	return sock;
+#if USE_SSL
+	if (useSSL && !mainSSL) {
+		mainSSL = SSL_CTX_new(SSLv23_client_method());
+		if (mainSSL) SSL_CTX_set_options(mainSSL, SSL_OP_NO_SSLv2);
+		else useSSL = false;
+	}
+
+	ctx->ssl = NULL;
+
+	if (useSSL) {
+		ctx->ssl = SSL_new(mainSSL);
+		SSL_set_fd(ctx->ssl, ctx->sock);
+
+		// add SNI
+		SSL_set_tlsext_host_name(ctx->ssl, hp);
+		ERR_clear_error();
+
+		if (SSL_connect(ctx->ssl) != 1) {
+			closesocket(ctx->sock);
+			SSL_free(ctx->ssl);
+			ctx->ssl = NULL;
+
+			if (!countSSL) SSL_CTX_free(mainSSL);
+			return -1;
+		}
+		countSSL++;
+	}
+#endif
+
+	return ctx->sock;
 	}
 
 
