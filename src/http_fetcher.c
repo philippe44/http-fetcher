@@ -139,6 +139,17 @@ static int makeSocket(const char *host, socketCtx* ctx, bool useSSL);
 	 */
 static int _checkBufSize(char **buf, int *bufsize, int more);
 
+#if !WIN
+static char* strlwr(char* str) {
+	char* p = str;
+	while (*p) {
+		*p = tolower(*p);
+		p++;
+	}
+	return str;
+}
+#endif
+
 static int _recv(socketCtx* ctx, void* buffer, size_t bytes, int options) {
 	if (!ctx->ssl) return recv(ctx->sock, buffer, bytes, options);
 #if USE_SSL
