@@ -92,12 +92,11 @@
 typedef struct {
 	int sock;
 	void* ssl;
-} socketCtx;
-
 #if USE_SSL
-static SSL_CTX* mainSSL;
-static int countSSL;
+	SSL_CTX* main;
 #endif
+
+} socketCtx;
 
 /* Globals */
 int timeout = DEFAULT_READ_TIMEOUT;
@@ -179,10 +178,7 @@ static void _closesocket(socketCtx* ctx) {
 		SSL_shutdown(ctx->ssl);
 		SSL_free(ctx->ssl);
 		ctx->ssl = NULL;
-	}
-	if (!--countSSL) {
-		SSL_CTX_free(mainSSL);
-		mainSSL = NULL;
+		SSL_CTX_free(ctx->main);
 	}
 #endif
 	closesocket(ctx->sock);
@@ -957,16 +953,16 @@ int makeSocket(const char* host, socketCtx* ctx, bool useSSL)
 	if (ret == -1) { errorSource = ERRNO; return -1; }
 
 #if USE_SSL
-	if (useSSL && !mainSSL) {
-		mainSSL = SSL_CTX_new(SSLv23_client_method());
-		if (mainSSL) SSL_CTX_set_options(mainSSL, SSL_OP_NO_SSLv2);
+	if (useSSL) {
+		ctx->main = SSL_CTX_new(SSLv23_client_method());
+		if (ctx->main) SSL_CTX_set_options(ctx->main, SSL_OP_NO_SSLv2);
 		else useSSL = false;
 	}
 
 	ctx->ssl = NULL;
 
 	if (useSSL) {
-		ctx->ssl = SSL_new(mainSSL);
+		ctx->ssl = SSL_new(ctx->main);
 		SSL_set_fd(ctx->ssl, ctx->sock);
 
 		// add SNI
@@ -977,11 +973,9 @@ int makeSocket(const char* host, socketCtx* ctx, bool useSSL)
 			closesocket(ctx->sock);
 			SSL_free(ctx->ssl);
 			ctx->ssl = NULL;
-
-			if (!countSSL) SSL_CTX_free(mainSSL);
+			SSL_CTX_free(ctx->main);
 			return -1;
 		}
-		countSSL++;
 	}
 #endif
 
