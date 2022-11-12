@@ -140,11 +140,7 @@ static int _checkBufSize(char **buf, int *bufsize, int more);
 
 #if !WIN
 static char* strlwr(char* str) {
-	char* p = str;
-	while (*p) {
-		*p = tolower(*p);
-		p++;
-	}
+	for (char* p = str; *p; p++) *p = tolower(*p);
 	return str;
 }
 #endif
@@ -542,6 +538,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		}
 	
 	/* Allocate enough memory to hold the page */
+	int length = contentLength;
 	if(contentLength == -1)
 		contentLength = DEFAULT_PAGE_BUF_SIZE;
 
@@ -554,7 +551,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		}
 
 	/* Begin reading the body of the file */
-	while(ret > 0)
+	while(ret > 0 && (length == - 1 || bytesRead < length))
 		{
 		FD_ZERO(&rfds);
 		FD_SET(sock, &rfds);
