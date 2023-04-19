@@ -225,8 +225,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		  (followRedirects < 0 || redirectsFollowed < followRedirects) )
   */  do
 		{
-		strlwr(url);
-	    useSSL = strstr(url, "https") != 0;
+		useSSL = strstr(url, "https") || strstr(url, "HTTPS");
 
 		/* Seek to the file path portion of the url */
 		charIndex = strstr(url, "://");
@@ -963,7 +962,7 @@ int makeSocket(const char* host, socketCtx* ctx, bool useSSL)
 		SSL_set_fd(ctx->ssl, ctx->sock);
 
 		// add SNI
-		SSL_set_tlsext_host_name(ctx->ssl, hp);
+		SSL_set_tlsext_host_name(ctx->ssl, host);
 		ERR_clear_error();
 
 		if (SSL_connect(ctx->ssl) != 1) {
