@@ -218,7 +218,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		  (followRedirects < 0 || redirectsFollowed < followRedirects) )
   */  do
 		{
-		useSSL = strstr(url, "https") || strstr(url, "HTTPS");
+		useSSL = !strnicmp(url, "https", 5);
 
 		/* Seek to the file path portion of the url */
 		charIndex = strstr(url, "://");
