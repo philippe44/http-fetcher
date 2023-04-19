@@ -65,6 +65,7 @@
 #include <ws2tcpip.h>
 #include <io.h>
 #define herror(s)
+#define  strncasecmp strnicmp
 #else
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -77,8 +78,8 @@
 #include <netdb.h>
 
 #define closesocket close
-
 #endif
+
 
 #if USE_SSL
 #include "openssl/ssl.h"
@@ -218,7 +219,7 @@ int http_fetch(const char *url_tmp, char **contentType, char **fileBuf)
 		  (followRedirects < 0 || redirectsFollowed < followRedirects) )
   */  do
 		{
-		useSSL = !strnicmp(url, "https", 5);
+		useSSL = !strncasecmp(url, "https", 5);
 
 		/* Seek to the file path portion of the url */
 		charIndex = strstr(url, "://");
